@@ -19,8 +19,23 @@ pip install 'raganything[image]'            # Image format conversion (BMP, TIFF
 pip install 'raganything[text]'             # Text file processing (TXT, MD)
 
 # Install from source for development
+git clone https://github.com/HKUDS/RAG-Anything.git
+cd RAG-Anything
 pip install -e .
 pip install -e '.[all]'
+
+# Verify installation and setup environment
+python setup_and_config.py --check-all
+```
+
+### Package Management
+```bash
+# Build and publish (for maintainers)
+python setup.py sdist bdist_wheel
+python -m twine upload dist/*
+
+# Check package metadata
+python -c "from raganything import __version__, __author__, __url__; print(f'v{__version__} by {__author__} - {__url__}')"
 ```
 
 ### Running Examples
@@ -46,10 +61,32 @@ python examples/image_format_test.py --check-pillow --file dummy
 python examples/text_format_test.py --check-reportlab --file dummy
 ```
 
+### Development Scripts (Root Directory)
+The repository includes several practical development and testing scripts in the root directory:
+
+```bash
+# Setup and configuration helper
+python setup_and_config.py                    # Interactive setup guide
+python setup_and_config.py --check-all        # Check all dependencies
+python setup_and_config.py --create-env       # Create sample .env file
+python setup_and_config.py --test-api --api-key YOUR_KEY  # Test API connection
+
+# Basic document processing and experimentation
+python quickstart_basic.py --file document.pdf --api-key YOUR_KEY
+python quickstart_basic.py --file document.pdf --api-key YOUR_KEY --enable-reranker
+python multimodal_query_demo.py --api-key YOUR_KEY --enable-reranker
+python batch_processing_demo.py --folder ./documents --api-key YOUR_KEY
+python content_insertion_demo.py --api-key YOUR_KEY
+
+# Debug and analysis tools
+python debug_storage.py                       # Analyze RAG storage contents
+```
+
 ### Testing Commands
 Note: This project does not have a formal test suite. Testing is done through example scripts:
 - Use `examples/office_document_test.py`, `examples/image_format_test.py`, and `examples/text_format_test.py` for testing parser functionality
 - These test scripts don't require API keys and only test document parsing capabilities
+- Use the root-level scripts for end-to-end testing with real API integration
 
 ## Architecture Overview
 
@@ -137,8 +174,28 @@ PARSE_METHOD=auto              # Parse method: auto, ocr, or txt
 
 ### Development Notes
 
-- The project uses a dataclass-based configuration system with environment variable support
-- Modal processors are designed to be extensible - new content types can be added by inheriting from GenericModalProcessor
-- The system supports both synchronous and asynchronous operations
-- Caching is implemented for both document parsing and query results
-- The architecture allows for easy integration of new parsers and modal processors
+- **Configuration System**: Uses dataclass-based `RAGAnythingConfig` with comprehensive environment variable support (see `raganything/config.py`)
+- **Extensible Architecture**: Modal processors can be extended by inheriting from `GenericModalProcessor`
+- **Dual Parser Support**: Choose between MinerU (better for PDFs, OCR) and Docling (optimized for Office documents, HTML)
+- **Async/Sync Operations**: Full support for both synchronous and asynchronous processing workflows
+- **Intelligent Reranking**: Optional LLM-based reranking for improved search result relevance
+- **Caching**: Multi-level caching for document parsing, query results, and LLM responses
+- **Batch Processing**: Concurrent document processing with configurable worker limits
+- **Direct Content Insertion**: Bypass document parsing by inserting pre-structured content lists
+- **Context-Aware Processing**: Intelligent context extraction from surrounding document content
+
+### Reranking System
+
+The project includes an optional intelligent reranking system that uses LLMs to improve search result relevance:
+
+```bash
+# Enable reranking in any script
+python quickstart_basic.py --file doc.pdf --api-key KEY --enable-reranker
+python quickstart_basic.py --file doc.pdf --api-key KEY --enable-reranker --rerank-model gpt-4o
+```
+
+**Key Features**:
+- LLM-powered relevance scoring (0-100 scale)
+- Configurable rerank models (gpt-4o-mini, gpt-4o, etc.)
+- Graceful fallback on failures
+- Works with all query modes (hybrid, local, global, naive)

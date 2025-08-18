@@ -3,16 +3,23 @@
 Multimodal Query Demo for RAG-Anything
 
 This script demonstrates advanced multimodal querying capabilities:
-1. VLM Enhanced queries (automatically analyze images in retrieved context)
-2. Multimodal queries with specific content (tables, equations, images)
-3. Different query modes (hybrid, local, global, naive)
+1. Process documents from a folder OR use existing processed documents
+2. VLM Enhanced queries (automatically analyze images in retrieved context)
+3. Multimodal queries with specific content (tables, equations, images)
+4. Different query modes (hybrid, local, global, naive)
 
 Usage:
-    python multimodal_query_demo.py --api-key YOUR_API_KEY
+    # Process documents from a folder and then query
+    python multimodal_query_demo.py --folder path/to/documents --api-key YOUR_API_KEY
+    
+    # Use existing processed documents
+    python multimodal_query_demo.py --api-key YOUR_API_KEY --working-dir ./rag_storage
     
 Optional arguments:
     --base-url YOUR_BASE_URL (for custom OpenAI-compatible endpoints)
-    --working-dir ./rag_storage (must contain processed documents)
+    --parser mineru|docling (default: mineru)
+    --max-workers N (for folder processing, default: 2)
+    --recursive (process subfolders when using --folder)
 """
 
 import asyncio
@@ -137,10 +144,11 @@ async def demo_vlm_enhanced_queries(rag):
     print()
     
     vlm_queries = [
-        "What do the images in this document show?",
-        "Analyze any charts or diagrams in the document",
-        "Describe the visual content and relate it to the text",
-        "What insights can be gained from the figures?"
+        "What do the images in these documents show?",
+        "Analyze any charts or diagrams across all documents",
+        "Describe the visual content and relate it to the text content",
+        "What insights can be gained from the figures and images?",
+        "Compare the visual elements between different documents"
     ]
     
     for i, query in enumerate(vlm_queries, 1):
@@ -226,7 +234,7 @@ async def demo_query_modes(rag):
     print("="*60)
     print("RAG-Anything supports different query modes for different use cases.\n")
     
-    sample_query = "What are the main findings in this document?"
+    sample_query = "What are the main findings across all documents?"
     modes = [
         ("hybrid", "Combines vector similarity and graph traversal"),
         ("local", "Focuses on local graph neighborhood"),
@@ -256,8 +264,9 @@ async def interactive_multimodal_session(rag):
     print("3. Type 'equation [question]' to include sample equation")
     print("4. Type 'normal [question]' for regular text query")
     print("5. Type 'quit' to exit")
-    print("\nExample: vlm What do the images show?")
-    print("Example: table How do these numbers compare to the document?")
+    print("\nExample: vlm What do the images show across all documents?")
+    print("Example: table How do these numbers compare to the documents?")
+    print("Example: normal What are the common themes between documents?")
     print("-" * 60)
     
     while True:
@@ -320,23 +329,50 @@ async def main():
     parser = argparse.ArgumentParser(description="Multimodal Query Demo for RAG-Anything")
     parser.add_argument("--api-key", required=True, help="OpenAI API key")
     parser.add_argument("--base-url", default=None, help="OpenAI base URL (optional)")
+    parser.add_argument("--folder", help="Path to folder containing documents to process")
     parser.add_argument("--working-dir", default="./rag_storage", 
-                       help="Working directory with processed documents")
+                       help="Working directory for RAG storage")
+    parser.add_argument("--parser", default="mineru", choices=["mineru", "docling"], 
+                       help="Parser to use (default: mineru)")
     parser.add_argument("--enable-reranker", action="store_true", 
                        help="Enable reranking for better retrieval quality")
     parser.add_argument("--rerank-model", default="gpt-4o-mini",
                        help="Model to use for reranking (default: gpt-4o-mini)")
+    parser.add_argument("--max-workers", type=int, default=2,
+                       help="Maximum number of concurrent files to process (default: 2)")
+    parser.add_argument("--recursive", action="store_true",
+                       help="Recursively process subfolders when using --folder")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Enable verbose output to see detailed processing steps")
     
     args = parser.parse_args()
     
-    # Check if working directory exists and has data
-    if not os.path.exists(args.working_dir):
-        print(f"❌ Error: Working directory '{args.working_dir}' not found!")
-        print("💡 Please run quickstart_basic.py first to process some documents.")
-        return
+    # Determine processing mode
+    if args.folder:
+        if not os.path.exists(args.folder):
+            print(f"❌ Error: Folder '{args.folder}' not found!")
+            return
+        if not os.path.isdir(args.folder):
+            print(f"❌ Error: '{args.folder}' is not a directory!")
+            return
+        processing_mode = "folder"
+    else:
+        # Check if working directory exists and has data
+        if not os.path.exists(args.working_dir):
+            print(f"❌ Error: Working directory '{args.working_dir}' not found!")
+            print("💡 Please run quickstart_basic.py first to process some documents, or use --folder to process new documents.")
+            return
+        processing_mode = "existing"
     
     print("🚀 Starting Multimodal Query Demo")
-    print(f"💾 Using working directory: {args.working_dir}")
+    if processing_mode == "folder":
+        print(f"📁 Processing folder: {args.folder}")
+        print(f"⚡ Max workers: {args.max_workers}")
+        print(f"🔄 Recursive: {'Yes' if args.recursive else 'No'}")
+        print(f"🔧 Using parser: {args.parser}")
+    else:
+        print("📚 Using existing processed documents")
+    print(f"💾 Working directory: {args.working_dir}")
     if args.enable_reranker:
         print(f"🔄 Reranker enabled: {args.rerank_model}")
     else:
@@ -345,9 +381,14 @@ async def main():
     # Create configuration
     config = RAGAnythingConfig(
         working_dir=args.working_dir,
+        parser=args.parser,
+        parse_method="auto",
         enable_image_processing=True,
         enable_table_processing=True,
         enable_equation_processing=True,
+        max_concurrent_files=args.max_workers,
+        recursive_folder_processing=args.recursive,
+        display_content_stats=args.verbose,
     )
     
     # Define model functions (same as basic example)
@@ -411,15 +452,45 @@ async def main():
         lightrag_kwargs=lightrag_kwargs,
     )
     
-    # Ensure LightRAG storages are initialized
-    print("🔄 Loading existing documents...")
-    try:
-        await rag._ensure_lightrag_initialized()
-        print("✅ Successfully loaded existing documents!")
-    except Exception as e:
-        print(f"⚠️  Error initializing RAGAnything: {e}")
-        print("💡 Please run quickstart_basic.py first to process some documents.")
-        return
+    # Process documents if folder provided
+    if processing_mode == "folder":
+        print("📝 Processing documents in folder...")
+        try:
+            # Get list of supported files
+            supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp', 
+                                  '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.txt', '.md']
+            
+            file_count = 0
+            for root, dirs, files in os.walk(args.folder):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in supported_extensions):
+                        file_count += 1
+                if not args.recursive:
+                    break
+            
+            print(f"📊 Found {file_count} supported files to process")
+            
+            await rag.process_folder_complete(
+                folder_path=args.folder,
+                output_dir="./output",
+                file_extensions=supported_extensions,
+                recursive=args.recursive,
+                max_workers=args.max_workers
+            )
+            print(f"✅ All {file_count} documents processed successfully!")
+        except Exception as e:
+            print(f"❌ Error processing documents: {e}")
+            return
+    else:
+        # Ensure LightRAG storages are initialized for existing documents
+        print("🔄 Loading existing documents...")
+        try:
+            await rag._ensure_lightrag_initialized()
+            print("✅ Successfully loaded existing documents!")
+        except Exception as e:
+            print(f"⚠️  Error initializing RAGAnything: {e}")
+            print("💡 Please run quickstart_basic.py first to process some documents, or use --folder to process new documents.")
+            return
     
     # Run demos
     try:

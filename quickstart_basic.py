@@ -3,22 +3,29 @@
 Basic RAG-Anything Quickstart Script
 
 This script demonstrates the simplest way to get started with RAG-Anything:
-1. Process a single document
-2. Ask questions about it
+1. Process a single document OR multiple documents in a folder
+2. Ask questions about the processed content
 3. Get answers based on the document content
 
 Usage:
+    # Process a single file
     python quickstart_basic.py --file path/to/document.pdf --api-key YOUR_API_KEY
+    
+    # Process multiple files in a folder
+    python quickstart_basic.py --folder path/to/documents --api-key YOUR_API_KEY
     
 Optional arguments:
     --base-url YOUR_BASE_URL (for custom OpenAI-compatible endpoints)
     --parser mineru|docling (default: mineru)
     --working-dir ./rag_storage (default: ./rag_storage)
+    --max-workers N (for folder processing, default: 2)
+    --recursive (process subfolders when using --folder)
 """
 
 import asyncio
 import argparse
 import os
+import time
 from pathlib import Path
 
 from raganything import RAGAnything, RAGAnythingConfig
@@ -128,7 +135,12 @@ The array must have exactly {len(documents)} scores."""
 
 async def main():
     parser = argparse.ArgumentParser(description="Basic RAG-Anything Quickstart")
-    parser.add_argument("--file", required=True, help="Path to document to process")
+    
+    # Create mutually exclusive group for file vs folder
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--file", help="Path to single document to process")
+    input_group.add_argument("--folder", help="Path to folder containing documents to process")
+    
     parser.add_argument("--api-key", required=True, help="OpenAI API key")
     parser.add_argument("--base-url", default=None, help="OpenAI base URL (optional)")
     parser.add_argument("--parser", default="mineru", choices=["mineru", "docling"], 
@@ -139,22 +151,51 @@ async def main():
                        help="Enable reranking for better retrieval quality")
     parser.add_argument("--rerank-model", default="gpt-4o-mini",
                        help="Model to use for reranking (default: gpt-4o-mini)")
+    parser.add_argument("--max-workers", type=int, default=2,
+                       help="Maximum number of concurrent files to process (default: 2)")
+    parser.add_argument("--recursive", action="store_true",
+                       help="Recursively process subfolders when using --folder")
+    parser.add_argument("--verbose", action="store_true",
+                       help="Enable verbose output to see detailed processing steps")
+    parser.add_argument("--show-progress", action="store_true",
+                       help="Show detailed progress during document processing")
     
     args = parser.parse_args()
     
-    # Validate file exists
-    if not os.path.exists(args.file):
-        print(f"❌ Error: File '{args.file}' not found!")
-        return
+    # Validate input exists
+    if args.file:
+        if not os.path.exists(args.file):
+            print(f"❌ Error: File '{args.file}' not found!")
+            return
+        input_path = args.file
+        processing_mode = "single"
+    else:  # args.folder
+        if not os.path.exists(args.folder):
+            print(f"❌ Error: Folder '{args.folder}' not found!")
+            return
+        if not os.path.isdir(args.folder):
+            print(f"❌ Error: '{args.folder}' is not a directory!")
+            return
+        input_path = args.folder
+        processing_mode = "folder"
     
     print("🚀 Starting RAG-Anything Basic Example")
-    print(f"📄 Processing file: {args.file}")
+    if processing_mode == "single":
+        print(f"📄 Processing file: {input_path}")
+    else:
+        print(f"📁 Processing folder: {input_path}")
+        print(f"⚡ Max workers: {args.max_workers}")
+        print(f"🔄 Recursive: {'Yes' if args.recursive else 'No'}")
     print(f"🔧 Using parser: {args.parser}")
     print(f"💾 Working directory: {args.working_dir}")
     if args.enable_reranker:
         print(f"🔄 Reranker enabled: {args.rerank_model}")
     else:
         print("🔄 Reranker disabled")
+    if args.verbose:
+        print("🔍 Verbose mode enabled - detailed processing info will be shown")
+    if args.show_progress:
+        print("📊 Progress tracking enabled")
     
     # Create configuration
     config = RAGAnythingConfig(
@@ -164,6 +205,9 @@ async def main():
         enable_image_processing=True,
         enable_table_processing=True,
         enable_equation_processing=True,
+        max_concurrent_files=args.max_workers,
+        recursive_folder_processing=args.recursive,
+        display_content_stats=args.verbose or args.show_progress,
     )
     
     # Define LLM model function
@@ -253,28 +297,95 @@ async def main():
         lightrag_kwargs=lightrag_kwargs,
     )
     
-    # Process the document
-    print("📝 Processing document...")
+    # Process the document(s)
     try:
-        await rag.process_document_complete(
-            file_path=args.file,
-            output_dir="./output",
-            parse_method="auto"
-        )
-        print("✅ Document processed successfully!")
+        if processing_mode == "single":
+            print("📝 Processing document...")
+            if args.verbose:
+                print(f"🔍 Starting document processing for: {input_path}")
+                print(f"🔧 Parser: {args.parser}, Method: auto")
+                print("🎯 Multimodal processing enabled: images, tables, equations")
+            
+            await rag.process_document_complete(
+                file_path=input_path,
+                output_dir="./output",
+                parse_method="auto",
+                display_stats=args.verbose or args.show_progress
+            )
+            print("✅ Document processed successfully!")
+            
+            if args.verbose:
+                print("🔍 Processing completed - document content added to knowledge graph")
+                
+        else:  # folder processing
+            print("📝 Processing documents in folder...")
+            
+            # Get list of supported files
+            supported_extensions = ['.pdf', '.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.gif', '.webp', 
+                                  '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx', '.txt', '.md']
+            
+            if args.verbose:
+                print(f"🔍 Scanning folder: {input_path}")
+                print(f"🔍 Supported extensions: {', '.join(supported_extensions)}")
+                print(f"🔍 Recursive scanning: {'enabled' if args.recursive else 'disabled'}")
+            
+            file_count = 0
+            files_to_process = []
+            for root, dirs, files in os.walk(input_path):
+                for file in files:
+                    if any(file.lower().endswith(ext) for ext in supported_extensions):
+                        file_count += 1
+                        file_path = os.path.join(root, file)
+                        files_to_process.append(file_path)
+                        if args.verbose:
+                            print(f"  📄 Found: {file_path}")
+                if not args.recursive:
+                    break
+            
+            print(f"📊 Found {file_count} supported files to process")
+            
+            if args.verbose and file_count > 0:
+                print(f"🔍 Processing with {args.max_workers} concurrent workers")
+                print("🎯 Multimodal processing enabled for all files")
+            
+            await rag.process_folder_complete(
+                folder_path=input_path,
+                output_dir="./output",
+                file_extensions=supported_extensions,
+                recursive=args.recursive,
+                max_workers=args.max_workers,
+                display_stats=args.verbose or args.show_progress
+            )
+            print(f"✅ All {file_count} documents processed successfully!")
+            
+            if args.verbose:
+                print("🔍 Batch processing completed - all documents added to unified knowledge graph")
+                
     except Exception as e:
-        print(f"❌ Error processing document: {e}")
+        print(f"❌ Error processing documents: {e}")
+        if args.verbose:
+            import traceback
+            print("🔍 Full error traceback:")
+            traceback.print_exc()
         return
     
     # Interactive query loop
-    print("\n🤖 RAG-Anything is ready! Ask questions about your document.")
+    content_description = "document" if processing_mode == "single" else "documents"
+    print(f"\n🤖 RAG-Anything is ready! Ask questions about your {content_description}.")
     if args.enable_reranker:
         print("🔄 Reranking enabled - search results will be intelligently reordered for relevance")
     print("💡 Try questions like:")
-    print("   - What is this document about?")
-    print("   - What are the main findings?")
-    print("   - Summarize the key points")
-    print("   - What do the images/tables show?")
+    if processing_mode == "single":
+        print("   - What is this document about?")
+        print("   - What are the main findings?")
+        print("   - Summarize the key points")
+        print("   - What do the images/tables show?")
+    else:
+        print("   - What are the common themes across all documents?")
+        print("   - Compare the findings between documents")
+        print("   - Summarize the key points from all documents")
+        print("   - What patterns emerge from the data/images/tables?")
+        print("   - Which document discusses [specific topic]?")
     print("\n💬 Type 'quit' to exit\n")
     
     while True:
@@ -288,10 +399,18 @@ async def main():
             if not question:
                 continue
             
-            print("🔍 Searching...")
+            if args.verbose:
+                print(f"🔍 Searching for: '{question}'")
+                search_start = time.time()
+            else:
+                print("🔍 Searching...")
             
             # Perform query
             result = await rag.aquery(question, mode="hybrid")
+            
+            if args.verbose:
+                search_time = time.time() - search_start
+                print(f"⏱️  Search completed in {search_time:.2f} seconds")
             
             print(f"\n🎯 Answer:\n{result}\n")
             print("-" * 80)
